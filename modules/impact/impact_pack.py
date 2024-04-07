@@ -1131,7 +1131,8 @@ class IterativeLatentUpscale:
                      "steps": ("INT", {"default": 3, "min": 1, "max": 10000, "step": 1}),
                      "temp_prefix": ("STRING", {"default": ""}),
                      "upscaler": ("UPSCALER",),
-                     "step_mode": (["simple", "geometric"], {"default": "simple"})
+                     "step_mode": (["simple", "geometric", "logarithmic"
+					 ], {"default": "simple"})
                     },
                 "hidden": {"unique_id": "UNIQUE_ID"},
                 }
@@ -1150,23 +1151,38 @@ class IterativeLatentUpscale:
             temp_prefix = None
 
         if step_mode == "geometric":
-            upscale_factor_unit = pow(upscale_factor, 1.0/steps)
+            upscale_factor_unit = math.sqrt(upscale_factor) ** (1.0 / steps)
+        elif step_mode == "logarithmic":
+            upscale_factor_unit = max(0, math.log(upscale_factor / steps, abs(1 - steps)+2)) # tweak constant
+#Document:
+#Which One to Use?
+#The best choice depends on your desired aesthetic and the nature of your images:
+#Geometric: Good for general-purpose upscaling where uniform growth is desired.
+#Logarithmic: Useful for focusing on specific areas, preserving finer details, or creating a more gradual upsizing effect.
         else:  # simple
             upscale_factor_unit = max(0, (upscale_factor - 1.0) / steps)
 
+        scale=1.0
         current_latent = samples
-        scale = 1
-
+        pixels_original = (w * h)
+        pixels_remaining = pixels_original * upscale_factor**2
+        
         for i in range(steps-1):
             if step_mode == "geometric":
                 scale *= upscale_factor_unit
+            elif step_mode == "logarithmic":
+                scale *= math.exp(upscale_factor_unit)
             else:  # simple
                 scale += upscale_factor_unit
 
-            new_w = w*scale
-            new_h = h*scale
-            core.update_node_status(unique_id, f"{i+1}/{steps} steps | x{scale:.2f}", (i+1)/steps)
-            print(f"IterativeLatentUpscale[{i+1}/{steps}]: {new_w:.1f}x{new_h:.1f} (scale:{scale:.2f}) ")
+            new_w = int(w*scale)
+            new_h = int(h*scale)
+            pixels_delta_unit = int((new_w * new_h) - pixels_original)
+            pixels_remaining -= pixels_delta_unit
+            pixels_remaining = int(pixels_remaining)
+            
+            core.update_node_status(unique_id, f"{i+1}/{steps} step | x{scale:.2f} | pixels remaining:({pixels_remaining:,})")
+            print(f"IterativeLatentUpscale[{i+1}/{steps}]: {new_w:.1f}x{new_h:.1f} | upscale factor unit:({upscale_factor_unit:.2f}) | scale:({scale:.2f}) | pixels adding this step:({pixels_delta_unit:,}) | pixels remaining:({pixels_remaining:,})")
             step_info = i, steps
             current_latent = upscaler.upscale_shape(step_info, current_latent, new_w, new_h, temp_prefix)
 
@@ -1174,7 +1190,7 @@ class IterativeLatentUpscale:
             new_w = w*upscale_factor
             new_h = h*upscale_factor
             core.update_node_status(unique_id, f"Final step | x{upscale_factor:.2f}", 1.0)
-            print(f"IterativeLatentUpscale[Final]: {new_w:.1f}x{new_h:.1f} (scale:{upscale_factor:.2f}) ")
+            print(f"IterativeLatentUpscale[Final]: {new_w:.1f}x{new_h:.1f} (scale:{upscale_factor:.2f})")
             step_info = steps-1, steps
             current_latent = upscaler.upscale_shape(step_info, current_latent, new_w, new_h, temp_prefix)
 
@@ -1183,48 +1199,6 @@ class IterativeLatentUpscale:
         return (current_latent, upscaler.vae)
 
 
-class IterativeImageUpscale:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {"required": {
-                     "pixels": ("IMAGE", ),
-                     "upscale_factor": ("FLOAT", {"default": 1.5, "min": 1, "max": 10000, "step": 0.1}),
-                     "steps": ("INT", {"default": 3, "min": 1, "max": 10000, "step": 1}),
-                     "temp_prefix": ("STRING", {"default": ""}),
-                     "upscaler": ("UPSCALER",),
-                     "vae": ("VAE",),
-                     "step_mode": (["simple", "geometric"], {"default": "simple"})
-                    },
-                "hidden": {"unique_id": "UNIQUE_ID"}
-                }
-
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image",)
-    FUNCTION = "doit"
-
-    CATEGORY = "ImpactPack/Upscale"
-
-    def doit(self, pixels, upscale_factor, steps, temp_prefix, upscaler, vae, step_mode="simple", unique_id=None):
-        if temp_prefix == "":
-            temp_prefix = None
-
-        core.update_node_status(unique_id, "VAEEncode (first)", 0)
-        if upscaler.is_tiled:
-            latent = nodes.VAEEncodeTiled().encode(vae, pixels, upscaler.tile_size)[0]
-        else:
-            latent = nodes.VAEEncode().encode(vae, pixels)[0]
-
-        refined_latent = IterativeLatentUpscale().doit(latent, upscale_factor, steps, temp_prefix, upscaler, step_mode, unique_id)
-
-        core.update_node_status(unique_id, "VAEDecode (final)", 1.0)
-        if upscaler.is_tiled:
-            pixels = nodes.VAEDecodeTiled().decode(vae, refined_latent[0], upscaler.tile_size)[0]
-        else:
-            pixels = nodes.VAEDecode().decode(vae, refined_latent[0])[0]
-
-        core.update_node_status(unique_id, "", None)
-
-        return (pixels, )
 
 
 class FaceDetailerPipe:
