@@ -26,6 +26,7 @@ import comfy.model_management
 import base64
 import impact.wildcards as wildcards
 from . import hooks
+from math import sqrt
 
 warnings.filterwarnings('ignore', category=UserWarning, message='TypedStorage is deprecated')
 
@@ -1154,7 +1155,7 @@ class IterativeLatentUpscale:
             temp_prefix = None
 
         if step_mode == "geometric":
-            upscale_factor_unit = pow(upscale_factor, 1.0/steps)
+            upscale_factor_unit = math.sqrt(upscale_factor) ** (1.0 / steps)
         else:  # simple
             upscale_factor_unit = max(0, (upscale_factor - 1.0) / steps)
 
@@ -1164,6 +1165,7 @@ class IterativeLatentUpscale:
         for i in range(steps-1):
             if step_mode == "geometric":
                 scale *= upscale_factor_unit
+                upscale_factor_unit = math.sqrt(upscale_factor) ** (1.0 / (steps - i - 1))
             else:  # simple
                 scale += upscale_factor_unit
 
